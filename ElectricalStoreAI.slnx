@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ElectricalStoreAI.Application/ElectricalStoreAI.Application.csproj" />
+    <Project Path="src/ElectricalStoreAI.Domain/ElectricalStoreAI.Domain.csproj" />
+    <Project Path="src/ElectricalStoreAI.Infrastructure/ElectricalStoreAI.Infrastructure.csproj" />
+    <Project Path="src/ElectricalStoreAI.Web/ElectricalStoreAI.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ElectricalStoreAI.IntegrationTests/ElectricalStoreAI.IntegrationTests.csproj" />
+    <Project Path="tests/ElectricalStoreAI.UnitTests/ElectricalStoreAI.UnitTests.csproj" />
+  </Folder>
+</Solution>

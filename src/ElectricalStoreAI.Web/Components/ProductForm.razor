@@ -1,0 +1,327 @@
+@namespace ElectricalStoreAI.Web.Components
+
+@using ElectricalStoreAI.Application.Images
+@using ElectricalStoreAI.Application.Products
+
+@inject IProductService ProductService
+@inject IProductImageService ProductImageService
+@inject IImageStorageService ImageStorage
+@inject ILogger<ProductForm> Logger
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h2 class="h4">@(IsEditMode ? $"Edit product — {Product!.Sku}" : "Add product")</h2>
+
+        @if (_errorMessage is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_errorMessage</div>
+        }
+        @if (_successMessage is not null)
+        {
+            <div class="alert alert-success" role="status">@_successMessage</div>
+        }
+
+        <form @onsubmit="HandleSaveAsync" @onsubmit:preventDefault>
+            <div class="row">
+                <div class="mb-2 col-md-4">
+                    <label class="form-label" for="pf-sku">SKU *</label>
+                    <input id="pf-sku" class="form-control" @bind="_sku" placeholder="e.g. LED-PHL-10W" maxlength="64" />
+                </div>
+                <div class="mb-2 col-md-8">
+                    <label class="form-label" for="pf-name">Name *</label>
+                    <input id="pf-name" class="form-control" @bind="_name" placeholder="Product name" maxlength="256" />
+                </div>
+            </div>
+            <div class="row">
+                <div class="mb-2 col-md-6">
+                    <label class="form-label" for="pf-brand">Brand</label>
+                    <input id="pf-brand" class="form-control" @bind="_brand" maxlength="128" />
+                </div>
+                <div class="mb-2 col-md-6">
+                    <label class="form-label" for="pf-category">Category</label>
+                    <input id="pf-category" class="form-control" @bind="_category" maxlength="128" />
+                </div>
+            </div>
+            <div class="mb-2">
+                <label class="form-label" for="pf-description">Description</label>
+                <input id="pf-description" class="form-control" @bind="_description" maxlength="1024" />
+            </div>
+            <div class="row">
+                <div class="mb-2 col-md-4">
+                    <label class="form-label" for="pf-price">Sale price (Rp) *</label>
+                    <input id="pf-price" class="form-control" type="number" step="any" min="0" @bind="_salePrice" />
+                </div>
+                <div class="mb-2 col-md-4">
+                    <label class="form-label" for="pf-unit">Sale unit *</label>
+                    <select id="pf-unit" class="form-select" @bind="_saleUnit">
+                        <option value="">— select —</option>
+                        @foreach (var unit in SaleUnitOptions)
+                        {
+                            <option value="@unit">@unit</option>
+                        }
+                    </select>
+                </div>
+                @if (IsEditMode)
+                {
+                    <div class="mb-2 col-md-4">
+                        <span class="form-label d-block">Status</span>
+                        <div class="form-check mt-2">
+                            <input id="pf-active" class="form-check-input" type="checkbox" @bind="_isActive" />
+                            <label class="form-check-label" for="pf-active">Active (shown in scanner)</label>
+                        </div>
+                    </div>
+                }
+            </div>
+            <div class="d-flex gap-2 mt-2">
+                <button class="btn btn-primary" type="submit" disabled="@_isSaving">@(_isSaving ? "Saving..." : "Save product")</button>
+                <button class="btn btn-outline-secondary" type="button" @onclick="OnClose">Close</button>
+            </div>
+        </form>
+
+        @if (IsEditMode)
+        {
+            <hr />
+            <h3 class="h5">Reference photos (@_images.Count)</h3>
+            <p class="text-muted mb-2">
+                Add several clear photos: front, side, packaging and readable label. Photos are uploaded and indexed
+                immediately after you select them (JPEG, PNG, WebP or GIF, max @(ImageStorage.MaxFileSizeBytes / (1024 * 1024)) MB each).
+            </p>
+
+            <InputFile @key="_inputFileKey" OnChange="UploadImagesAsync" multiple accept="image/jpeg,image/png,image/webp,image/gif"
+                       class="form-control" disabled="@_isUploading" />
+
+            @if (_isUploading)
+            {
+                <div class="alert alert-info mt-2" role="status">@_uploadProgress</div>
+            }
+            @foreach (var message in _imageMessages)
+            {
+                <div class="alert @(message.IsError ? "alert-warning" : "alert-success") mt-2 mb-0 py-2" role="status">@message.Text</div>
+            }
+
+            @if (_images.Count == 0 && !_isUploading)
+            {
+                <div class="alert alert-secondary mt-2">No reference photos yet. This product cannot be recognized by the scanner until at least one photo is indexed.</div>
+            }
+            else
+            {
+                <div class="d-flex flex-wrap gap-3 mt-3">
+                    @foreach (var image in _images)
+                    {
+                        <div class="card reference-image-card">
+                            <img src="/product-images/@image.Id" class="card-img-top" alt="Reference photo of @Product!.Name" loading="lazy" />
+                            <div class="card-body p-2 small">
+                                <div>@image.CreatedAtUtc.ToLocalTime().ToString("dd MMM yyyy HH:mm")</div>
+                                <div><strong>@(image.IsIndexed ? "Indexed" : "Not indexed")</strong></div>
+                                @if (_pendingDeleteId == image.Id)
+                                {
+                                    <div class="d-flex gap-1 mt-1">
+                                        <button class="btn btn-sm btn-danger" type="button" @onclick="() => DeleteImageAsync(image.Id)">Confirm delete</button>
+                                        <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="() => _pendingDeleteId = null">Cancel</button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-sm btn-outline-danger mt-1" type="button" @onclick="() => _pendingDeleteId = image.Id">Delete</button>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        }
+        else
+        {
+            <p class="text-muted mt-3 mb-0">After saving, this form stays open so you can add reference photos.</p>
+        }
+    </div>
+</div>
+
+@code {
+    private const int MaxFilesPerUpload = 10;
+    private static readonly string[] DefaultSaleUnits = ["Pcs", "Meter", "Roll", "Pack", "Box", "Set"];
+
+    /// <summary>The product being edited, or null to create a new product.</summary>
+    [Parameter] public ProductDto? Product { get; set; }
+
+    [Parameter] public EventCallback<ProductDto> OnSaved { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    [Parameter] public string? InitialMessage { get; set; }
+
+    private bool IsEditMode => Product is not null;
+
+    private IEnumerable<string> SaleUnitOptions =>
+        string.IsNullOrWhiteSpace(_saleUnit) || DefaultSaleUnits.Contains(_saleUnit, StringComparer.OrdinalIgnoreCase)
+            ? DefaultSaleUnits
+            : DefaultSaleUnits.Append(_saleUnit);
+
+    private string _sku = string.Empty;
+    private string _name = string.Empty;
+    private string? _brand;
+    private string? _category;
+    private string? _description;
+    private decimal _salePrice;
+    private string _saleUnit = string.Empty;
+    private bool _isActive = true;
+
+    private bool _isSaving;
+    private string? _errorMessage;
+    private string? _successMessage;
+
+    private IReadOnlyList<ReferenceImageDto> _images = [];
+    private bool _isUploading;
+    private string? _uploadProgress;
+    private List<(string Text, bool IsError)> _imageMessages = [];
+    private Guid? _pendingDeleteId;
+    private int _inputFileKey;
+
+    // The parent re-creates this component (via @key) when a different product is selected,
+    // so initialization from parameters happens exactly once per product.
+    protected override async Task OnInitializedAsync()
+    {
+        _successMessage = InitialMessage;
+
+        if (Product is not null)
+        {
+            _sku = Product.Sku;
+            _name = Product.Name;
+            _brand = Product.Brand;
+            _category = Product.Category;
+            _description = Product.Description;
+            _salePrice = Product.SalePrice;
+            _saleUnit = Product.SaleUnit;
+            _isActive = Product.IsActive;
+            await LoadImagesAsync();
+        }
+        else
+        {
+            _saleUnit = "Pcs";
+        }
+    }
+
+    private async Task HandleSaveAsync()
+    {
+        if (_isSaving) return;
+        _isSaving = true;
+        _errorMessage = null;
+        _successMessage = null;
+
+        try
+        {
+            ProductDto saved = Product is not null
+                ? await ProductService.UpdateAsync(new ProductUpdateDto(
+                    Product.Id, _sku, _name, _brand, _category, _description, _salePrice, _saleUnit, _isActive))
+                : await ProductService.CreateAsync(new ProductCreateDto(
+                    _sku, _name, _brand, _category, _description, _salePrice, _saleUnit));
+
+            _successMessage = "Product saved.";
+            await OnSaved.InvokeAsync(saved);
+        }
+        catch (Exception ex)
+        {
+            if (!UserMessages.IsUserFacing(ex))
+            {
+                Logger.LogError(ex, "Saving product failed");
+            }
+
+            _errorMessage = UserMessages.From(ex, "The product could not be saved. Please check the values and try again.");
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task UploadImagesAsync(InputFileChangeEventArgs args)
+    {
+        if (Product is null || _isUploading) return;
+
+        _isUploading = true;
+        _imageMessages = [];
+        _pendingDeleteId = null;
+
+        // GetMultipleFiles throws when more files than the limit are selected, so take the first N instead.
+        var files = args.GetMultipleFiles(Math.Max(args.FileCount, 1)).Take(MaxFilesPerUpload).ToList();
+        if (args.FileCount > MaxFilesPerUpload)
+        {
+            _imageMessages.Add(($"Only the first {MaxFilesPerUpload} files were processed.", true));
+        }
+
+        try
+        {
+            for (var i = 0; i < files.Count; i++)
+            {
+                var file = files[i];
+                _uploadProgress = $"Uploading and indexing photo {i + 1} of {files.Count}: {file.Name}";
+                StateHasChanged();
+
+                if (file.Size > ImageStorage.MaxFileSizeBytes)
+                {
+                    _imageMessages.Add(($"{file.Name}: too large ({file.Size / (1024 * 1024.0):0.0} MB). Maximum is {ImageStorage.MaxFileSizeBytes / (1024 * 1024)} MB.", true));
+                    continue;
+                }
+
+                try
+                {
+                    // The default OpenReadStream limit is 500 KB, which rejected normal phone photos.
+                    await using var stream = file.OpenReadStream(ImageStorage.MaxFileSizeBytes);
+                    var result = await ProductImageService.AddAsync(Product.Id, stream);
+                    _imageMessages.Add(result.Warning is null
+                        ? ($"{file.Name}: saved and indexed.", false)
+                        : ($"{file.Name}: {result.Warning}", true));
+                }
+                catch (Exception ex)
+                {
+                    if (!UserMessages.IsUserFacing(ex))
+                    {
+                        Logger.LogError(ex, "Uploading reference image failed");
+                    }
+
+                    _imageMessages.Add(($"{file.Name}: {UserMessages.From(ex, "the photo could not be processed.")}", true));
+                }
+            }
+
+            await LoadImagesAsync();
+        }
+        finally
+        {
+            _isUploading = false;
+            _uploadProgress = null;
+            _inputFileKey++; // reset the file input so the same file can be selected again
+        }
+    }
+
+    private async Task DeleteImageAsync(Guid imageId)
+    {
+        _pendingDeleteId = null;
+        _imageMessages = [];
+        try
+        {
+            await ProductImageService.DeleteAsync(imageId);
+            _imageMessages.Add(("Photo deleted.", false));
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Deleting reference image failed");
+            _imageMessages.Add((UserMessages.From(ex, "The photo could not be deleted."), true));
+        }
+
+        await LoadImagesAsync();
+    }
+
+    private async Task LoadImagesAsync()
+    {
+        if (Product is null) return;
+        try
+        {
+            _images = await ProductImageService.GetImagesAsync(Product.Id);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Loading reference images failed");
+            _imageMessages.Add(("The reference photos could not be loaded.", true));
+        }
+    }
+}

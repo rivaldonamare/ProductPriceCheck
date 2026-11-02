@@ -1,0 +1,148 @@
+@page "/products"
+@rendermode InteractiveServer
+@using ElectricalStoreAI.Application.Products
+@inject IProductService ProductService
+@inject ILogger<Products> Logger
+
+<PageTitle>Products</PageTitle>
+
+<h1>Product catalog</h1>
+
+<form class="mb-3 d-flex gap-2" @onsubmit="LoadProductsAsync" @onsubmit:preventDefault>
+    <input type="search" class="form-control" placeholder="Search by name, SKU, brand or category..." aria-label="Search products" @bind="_query" />
+    <button class="btn btn-primary" type="submit">Search</button>
+    @if (!_isFormOpen)
+    {
+        <button class="btn btn-outline-primary text-nowrap" type="button" @onclick="StartCreate">Add product</button>
+    }
+</form>
+
+@if (_isFormOpen)
+{
+    @* @key forces a fresh form per product so switching between products never shows stale values. *@
+    <ProductForm @key="_formKey" Product="_editingProduct" InitialMessage="@_formMessage" OnSaved="HandleSavedAsync" OnClose="CloseForm" />
+}
+
+@if (_errorMessage is not null)
+{
+    <div class="alert alert-danger" role="alert">@_errorMessage</div>
+}
+
+@if (_isLoading)
+{
+    <div class="alert alert-info" role="status">Loading products...</div>
+}
+else if (_products.Count > 0)
+{
+    <p class="text-muted">@_products.Count product(s)</p>
+    <table class="table table-sm align-middle">
+        <thead>
+            <tr>
+                <th>SKU</th>
+                <th>Name</th>
+                <th>Brand</th>
+                <th class="text-end">Price</th>
+                <th>Sale unit</th>
+                <th>Status</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var product in _products)
+            {
+                <tr class="@(product.Id == _editingProduct?.Id ? "table-active" : null)">
+                    <td>@product.Sku</td>
+                    <td>@product.Name</td>
+                    <td>@product.Brand</td>
+                    <td class="text-end">@product.FormattedSalePrice</td>
+                    <td>@product.SaleUnit</td>
+                    <td>@(product.IsActive ? "Active" : "Inactive")</td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-primary" type="button" @onclick="() => StartEdit(product)">Edit / photos</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+else if (string.IsNullOrWhiteSpace(_query))
+{
+    <div class="alert alert-secondary">No products yet. Click "Add product" to create one.</div>
+}
+else
+{
+    <div class="alert alert-secondary">No products match "@_query".</div>
+}
+
+@code {
+    private string _query = string.Empty;
+    private bool _isLoading = true;
+    private bool _isFormOpen;
+    private string? _errorMessage;
+    private string? _formMessage;
+    private string _formKey = "new";
+    private ProductDto? _editingProduct;
+    private IReadOnlyList<ProductDto> _products = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadProductsAsync();
+    }
+
+    private async Task LoadProductsAsync()
+    {
+        _isLoading = true;
+        _errorMessage = null;
+
+        try
+        {
+            _products = await ProductService.SearchAsync(_query);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Loading products failed");
+            _errorMessage = "The product catalog could not be loaded. Please try again.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void StartCreate()
+    {
+        _editingProduct = null;
+        _formMessage = null;
+        _formKey = "new-" + Guid.NewGuid();
+        _isFormOpen = true;
+    }
+
+    private void StartEdit(ProductDto product)
+    {
+        _editingProduct = product;
+        _formMessage = null;
+        _formKey = product.Id.ToString();
+        _isFormOpen = true;
+    }
+
+    private void CloseForm()
+    {
+        _isFormOpen = false;
+        _editingProduct = null;
+    }
+
+    private async Task HandleSavedAsync(ProductDto saved)
+    {
+        var wasCreate = _editingProduct is null;
+        _editingProduct = saved;
+
+        if (wasCreate)
+        {
+            // Switch the open form into edit mode so photos can be added right away.
+            _formKey = saved.Id.ToString();
+            _formMessage = "Product created. Now add reference photos below.";
+        }
+
+        await LoadProductsAsync();
+    }
+}

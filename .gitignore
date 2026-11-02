@@ -361,3 +361,8 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# ONNX model (too large for GitHub)
+Models/*.onnx
+
+# Local test images
+bakpia.jpeg

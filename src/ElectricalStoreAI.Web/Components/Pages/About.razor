@@ -1,0 +1,108 @@
+@page "/about"
+@rendermode InteractiveServer
+@using ElectricalStoreAI.Application.Products
+@using ElectricalStoreAI.Application.Recognition
+@using ElectricalStoreAI.Infrastructure
+@using ElectricalStoreAI.Infrastructure.Recognition
+@using Microsoft.Extensions.Options
+@inject IImageEmbeddingService ImageEmbeddingService
+@inject IProductImageService ProductImageService
+@inject IOptions<ImageEmbeddingOptions> EmbeddingOptions
+@inject AppDataLocations DataLocations
+@inject ILogger<About> Logger
+
+<PageTitle>Settings / About</PageTitle>
+
+<h1>Settings / About</h1>
+
+<p>
+    Electrical Store AI is a local-first prototype for identifying electrical-store products using
+    a webcam and an on-device image embedding model, backed by a local SQLite product catalog.
+    No cloud AI service is called during scanning.
+</p>
+
+<h2 class="h4">Recognition model</h2>
+<table class="table table-sm w-auto">
+    <tbody>
+        <tr><th>Model key</th><td>@ImageEmbeddingService.ModelKey</td></tr>
+        <tr><th>Status</th><td>@StatusText</td></tr>
+        <tr><th>Configured path</th><td><code>@EmbeddingOptions.Value.ConfiguredModelPath</code></td></tr>
+        <tr><th>Data directory</th><td><code>@DataLocations.DataDirectory</code></td></tr>
+    </tbody>
+</table>
+@if (ImageEmbeddingService.Status is EmbeddingModelStatus.Missing or EmbeddingModelStatus.Failed)
+{
+    <div class="alert alert-warning">
+        Place the ONNX model file at <code>Models/clip-vit-b32.onnx</code> inside the data directory above
+        (or set <code>Recognition:ModelPath</code> in appsettings.json), then reload this page.
+    </div>
+}
+
+<h3 class="h5">Rebuild embeddings</h3>
+<p>
+    Re-generates the embedding of every reference photo with the current model. Use it after changing the model,
+    or to index photos that were saved while the model was unavailable.
+</p>
+<button class="btn btn-outline-primary" type="button" @onclick="RebuildAsync" disabled="@_isRebuilding">
+    @(_isRebuilding ? $"Rebuilding... {_progress} done" : "Rebuild embeddings")
+</button>
+@if (_rebuildMessage is not null)
+{
+    <div class="alert alert-info mt-2" role="status">@_rebuildMessage</div>
+}
+
+<h2 class="h4 mt-4">Backup</h2>
+<p>
+    Stop the application, then copy the whole data directory (database <code>ElectricalStoreAI.db</code> and the
+    <code>Images</code> folder) to a safe location. Restore by copying it back while the application is stopped.
+</p>
+
+<h2 class="h4">Limitations</h2>
+<ul>
+    <li>Similarity scores are ranking scores, not calibrated probabilities.</li>
+    <li>Visual appearance alone may not distinguish products that differ only by wattage, rating, size, or model.</li>
+    <li>The "not confidently identified" warning uses uncalibrated thresholds; tune them with real test photos.</li>
+    <li>The system never automatically adds a product to a sale; the cashier must confirm a candidate.</li>
+</ul>
+
+@code {
+    private bool _isRebuilding;
+    private int _progress;
+    private string? _rebuildMessage;
+
+    private string StatusText => ImageEmbeddingService.Status switch
+    {
+        EmbeddingModelStatus.Ready => "Ready",
+        EmbeddingModelStatus.Loading => "Loading...",
+        EmbeddingModelStatus.NotLoaded => "Not loaded yet (loads on first use)",
+        EmbeddingModelStatus.Missing => "Missing — model file not found",
+        _ => "Failed to load — check the model file",
+    };
+
+    private async Task RebuildAsync()
+    {
+        _isRebuilding = true;
+        _progress = 0;
+        _rebuildMessage = null;
+        try
+        {
+            var progress = new Progress<int>(count => { _progress = count; _ = InvokeAsync(StateHasChanged); });
+            var summary = await ProductImageService.RebuildEmbeddingsAsync(progress);
+            _rebuildMessage = $"Done: {summary.Indexed} of {summary.Total} photos indexed" +
+                              (summary.Failed > 0 ? $", {summary.Failed} failed (missing or unreadable file)." : ".");
+        }
+        catch (Exception ex)
+        {
+            if (!UserMessages.IsUserFacing(ex))
+            {
+                Logger.LogError(ex, "Rebuilding embeddings failed");
+            }
+
+            _rebuildMessage = UserMessages.From(ex, "Rebuilding embeddings failed. Check the application log.");
+        }
+        finally
+        {
+            _isRebuilding = false;
+        }
+    }
+}
