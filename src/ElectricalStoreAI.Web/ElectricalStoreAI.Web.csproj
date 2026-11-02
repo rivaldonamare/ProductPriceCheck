@@ -5,6 +5,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+    <!-- Local runtime data (SQLite DB + photos) is not part of the build and must not trigger dotnet watch. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);App_Data/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

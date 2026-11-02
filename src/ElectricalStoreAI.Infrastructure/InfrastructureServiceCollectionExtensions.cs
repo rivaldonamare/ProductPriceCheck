@@ -19,7 +19,7 @@ public static class InfrastructureServiceCollectionExtensions
         IConfiguration configuration,
         string contentRootPath)
     {
-        var dataDirectory = ResolveDataDirectory(configuration);
+        var dataDirectory = ResolveDataDirectory(configuration, contentRootPath);
         Directory.CreateDirectory(dataDirectory);
 
         var connectionString = FirstNonEmpty(
@@ -67,12 +67,22 @@ public static class InfrastructureServiceCollectionExtensions
         return services;
     }
 
-    private static string ResolveDataDirectory(IConfiguration configuration)
+    /// <summary>
+    /// Absolute DataDirectory is used as-is; a relative one resolves against the content root
+    /// (the Web project folder), not the process working directory, so it is stable however the app is started.
+    /// Default: %APPDATA%/ElectricalStoreAI.
+    /// </summary>
+    private static string ResolveDataDirectory(IConfiguration configuration, string contentRootPath)
     {
         var configured = FirstNonEmpty(configuration["DataDirectory"]);
-        return Path.GetFullPath(configured ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData, Environment.SpecialFolderOption.Create),
-            "ElectricalStoreAI"));
+        if (configured is null)
+        {
+            return Path.GetFullPath(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData, Environment.SpecialFolderOption.Create),
+                "ElectricalStoreAI"));
+        }
+
+        return Path.GetFullPath(Path.IsPathRooted(configured) ? configured : Path.Combine(contentRootPath, configured));
     }
 
     /// <summary>

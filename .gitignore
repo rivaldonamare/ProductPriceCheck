@@ -371,3 +371,6 @@ bakpia.jpeg
 TmpTestDownload.ps1
 Models/*.zip
 .venv/
+
+# Local runtime data (SQLite DB + product photos)
+App_Data/

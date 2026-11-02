@@ -66,12 +66,20 @@ The database is created and migrated automatically on startup. The model loads i
 
 ## Data location and backup
 
-| Data | Default location |
+| Environment | Data folder |
 |---|---|
-| SQLite database | `%APPDATA%\ElectricalStoreAI\ElectricalStoreAI.db` |
-| Reference photos | `%APPDATA%\ElectricalStoreAI\Images\` |
+| Development (`dotnet run`, Visual Studio) | `App_Data/` at the repository root (git-ignored) |
+| Other (no `DataDirectory` set) | `%APPDATA%\ElectricalStoreAI\` |
 
-The database stores photo metadata and embeddings; the photo files themselves live in the `Images` folder. **Back up the whole `%APPDATA%\ElectricalStoreAI` folder**, not only the `.db` file — otherwise thumbnails break. Stop the app before copying.
+Inside the data folder: `ElectricalStoreAI.db` (SQLite) and `Images\` (photo files, created on first upload). A relative `DataDirectory` resolves against the Web project folder (`src/ElectricalStoreAI.Web`), so the development setting is `../../App_Data`.
+
+The database stores photo metadata and embeddings; the photo files themselves live in the `Images` folder. **Back up the whole data folder**, not only the `.db` file — otherwise thumbnails break. Stop the app before copying (the `-wal`/`-shm` files belong to the database).
+
+### Inspecting the database (DBeaver etc.)
+
+1. New connection → **SQLite** → *Path*: the `ElectricalStoreAI.db` file above (no username/password).
+2. Tables: `Products`, `ProductReferenceImages`, `ProductImageEmbeddings`, `__EFMigrationsHistory`.
+3. Prefer read-only while the app runs; edit only with the app stopped. Embedding vectors are JSON text — do not edit them.
 
 Override locations with configuration:
 
