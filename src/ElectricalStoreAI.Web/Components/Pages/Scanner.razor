@@ -1,0 +1,425 @@
+@page "/scanner"
+@rendermode InteractiveServer
+@using System.Diagnostics
+@using ElectricalStoreAI.Application.Common
+@using ElectricalStoreAI.Application.Products
+@using ElectricalStoreAI.Application.Recognition
+@inject IImageEmbeddingService ImageEmbeddingService
+@inject IProductRecognitionService RecognitionService
+@inject IProductService ProductService
+@inject IJSRuntime JS
+@inject ILogger<Scanner> Logger
+@implements IAsyncDisposable
+
+<PageTitle>Scanner</PageTitle>
+
+<h1>Product scanner</h1>
+
+@if (_modelStatus is EmbeddingModelStatus.Missing or EmbeddingModelStatus.Failed)
+{
+    <div class="alert alert-danger" role="alert">
+        <strong>Recognition model unavailable.</strong>
+        @(_modelStatus == EmbeddingModelStatus.Missing
+            ? "The model file was not found. See the About page for setup instructions."
+            : "The model file could not be loaded. See the About page for setup instructions.")
+        Manual search below still works.
+    </div>
+}
+else if (_modelStatus is EmbeddingModelStatus.Loading or EmbeddingModelStatus.NotLoaded)
+{
+    <div class="alert alert-info" role="status">Loading the recognition model... the first scan may take a few seconds.</div>
+}
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="scanner-container">
+            <video id="@VideoElementId" autoplay playsinline muted class="scanner-video"></video>
+
+            <div class="d-flex gap-2 mt-2">
+                @if (_cameraState is CameraState.Ready)
+                {
+                    <button class="btn btn-primary" type="button" @onclick="CaptureAndScanAsync" disabled="@_isScanning">
+                        @(_isScanning ? "Scanning..." : "Capture & scan")
+                    </button>
+                    <button class="btn btn-outline-secondary" type="button" @onclick="StopCameraAsync" disabled="@_isScanning">Stop camera</button>
+                }
+                else
+                {
+                    <button class="btn btn-primary" type="button" @onclick="StartCameraAsync" disabled="@(_cameraState is CameraState.Starting)">
+                        @(_cameraState switch
+                        {
+                            CameraState.Starting => "Starting camera...",
+                            CameraState.Failed => "Retry camera",
+                            _ => "Start camera",
+                        })
+                    </button>
+                }
+            </div>
+
+            @if (_cameraError is not null)
+            {
+                <div class="alert alert-danger mt-2" role="alert">@_cameraError</div>
+            }
+        </div>
+
+        @if (_errorMessage is not null)
+        {
+            <div class="alert alert-danger mt-3" role="alert">@_errorMessage</div>
+        }
+
+        @if (_result is not null)
+        {
+            <div class="mt-3">
+                @if (_result.IndexedImageCount == 0)
+                {
+                    <div class="alert alert-warning" role="status">
+                        <strong>No products are indexed yet.</strong>
+                        Add reference photos to active products on the Products page, then scan again. Use manual search meanwhile.
+                    </div>
+                }
+                else
+                {
+                    @if (!_result.IsConfident)
+                    {
+                        <div class="alert alert-warning" role="status">
+                            <strong>Product not confidently identified.</strong>
+                            The best matches are weak or very close to each other. Check wattage / rating / size on the item,
+                            pick the correct product below, or use manual search.
+                        </div>
+                    }
+
+                    <h2 class="h5">Candidates — confirm the correct product</h2>
+                    <p class="text-muted small mb-2">
+                        Score = similarity ranking score (0–1) for ordering only. It is not a probability that the product is correct.
+                    </p>
+                    <ol class="list-group list-group-numbered">
+                        @foreach (var candidate in _result.Candidates)
+                        {
+                            <li class="list-group-item d-flex justify-content-between align-items-start gap-2">
+                                <div class="me-auto">
+                                    <div><strong>@candidate.Name</strong> <span class="text-muted">(@candidate.Sku)</span></div>
+                                    <div>@candidate.FormattedSalePrice / @candidate.SaleUnit</div>
+                                    <div class="small text-muted">Ranking score: @candidate.SimilarityScore.ToString("0.000")</div>
+                                </div>
+                                <button class="btn btn-sm btn-outline-primary" type="button" @onclick="() => ConfirmProductAsync(candidate.ProductId)">Confirm</button>
+                            </li>
+                        }
+                    </ol>
+                }
+
+                @if (_diagnostics is not null)
+                {
+                    <div class="text-muted small mt-2">Timings — @_diagnostics</div>
+                }
+            </div>
+        }
+    </div>
+
+    <div class="col-lg-5">
+        <h2 class="h5">Selected items</h2>
+        @if (_cart.Count == 0)
+        {
+            <div class="alert alert-secondary">Nothing selected yet. Confirm a candidate or a manual search result.</div>
+        }
+        else
+        {
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr><th>Item</th><th style="width: 7rem">Qty</th><th class="text-end">Subtotal</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var line in _cart)
+                    {
+                        <tr>
+                            <td>
+                                <div>@line.Name</div>
+                                <div class="small text-muted">@line.Sku · @RupiahFormatter.Format(line.UnitPrice) / @line.SaleUnit</div>
+                            </td>
+                            <td>
+                                <input class="form-control form-control-sm" type="number" min="0.01" step="any" aria-label="Quantity of @line.Name"
+                                       value="@line.Quantity" @onchange="e => SetQuantity(line, e.Value)" />
+                            </td>
+                            <td class="text-end">@RupiahFormatter.Format(line.Subtotal)</td>
+                            <td><button class="btn btn-sm btn-outline-danger" type="button" @onclick="() => _cart.Remove(line)" aria-label="Remove @line.Name">Remove</button></td>
+                        </tr>
+                    }
+                </tbody>
+                <tfoot>
+                    <tr><th colspan="2">Total</th><th class="text-end">@RupiahFormatter.Format(_cart.Sum(line => line.Subtotal))</th><th></th></tr>
+                </tfoot>
+            </table>
+            <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="() => _cart.Clear()">Clear selection</button>
+        }
+
+        <h2 class="h5 mt-4">Manual search</h2>
+        <form class="d-flex gap-2" @onsubmit="RunManualSearchAsync" @onsubmit:preventDefault>
+            <input type="search" class="form-control" placeholder="Name, SKU, brand or category" aria-label="Manual product search" @bind="_manualQuery" />
+            <button class="btn btn-primary" type="submit">Search</button>
+        </form>
+        @if (_manualResults.Count > 0)
+        {
+            <ul class="list-group mt-2">
+                @foreach (var product in _manualResults)
+                {
+                    <li class="list-group-item d-flex justify-content-between align-items-start gap-2">
+                        <div class="me-auto">
+                            <div><strong>@product.Name</strong> <span class="text-muted">(@product.Sku)</span></div>
+                            <div>@product.FormattedSalePrice / @product.SaleUnit</div>
+                        </div>
+                        <button class="btn btn-sm btn-outline-primary" type="button" @onclick="() => ConfirmProductAsync(product.Id)">Select</button>
+                    </li>
+                }
+            </ul>
+        }
+        else if (_manualSearched)
+        {
+            <div class="alert alert-secondary mt-2">No active products matched your search.</div>
+        }
+    </div>
+</div>
+
+@code {
+    private const string VideoElementId = "camera-preview";
+    private const int MaxManualResults = 50;
+
+    private enum CameraState { Off, Starting, Ready, Failed }
+
+    private sealed class CartLine
+    {
+        public required Guid ProductId { get; init; }
+        public required string Sku { get; init; }
+        public required string Name { get; init; }
+        public required string SaleUnit { get; init; }
+        /// <summary>Snapshot of the database price at the moment the cashier confirmed the product.</summary>
+        public required decimal UnitPrice { get; init; }
+        public decimal Quantity { get; set; } = 1;
+        public decimal Subtotal => UnitPrice * Quantity;
+    }
+
+    private sealed record CameraStartResult(bool Ok, string? Code, string? Message);
+
+    private readonly CancellationTokenSource _disposeCts = new();
+    private DotNetObjectReference<Scanner>? _selfReference;
+    private System.Threading.Timer? _modelStatusTimer;
+
+    private CameraState _cameraState = CameraState.Off;
+    private EmbeddingModelStatus _modelStatus;
+    private string? _cameraError;
+    private bool _isScanning;
+    private string? _errorMessage;
+    private RecognitionResult? _result;
+    private string? _diagnostics;
+
+    private readonly List<CartLine> _cart = [];
+
+    private string _manualQuery = string.Empty;
+    private bool _manualSearched;
+    private IReadOnlyList<ProductDto> _manualResults = [];
+
+    protected override void OnInitialized()
+    {
+        _modelStatus = ImageEmbeddingService.Status;
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // While the model is still warming up, poll its status so the banner disappears when it is ready.
+        if (firstRender && _modelStatus is EmbeddingModelStatus.Loading or EmbeddingModelStatus.NotLoaded)
+        {
+            _modelStatusTimer = new System.Threading.Timer(_ => _ = InvokeAsync(RefreshModelStatus), null, 1000, 1000);
+        }
+    }
+
+    private void RefreshModelStatus()
+    {
+        var status = ImageEmbeddingService.Status;
+        if (status == _modelStatus) return;
+
+        _modelStatus = status;
+        if (status is not (EmbeddingModelStatus.Loading or EmbeddingModelStatus.NotLoaded))
+        {
+            _modelStatusTimer?.Dispose();
+            _modelStatusTimer = null;
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task StartCameraAsync()
+    {
+        _cameraState = CameraState.Starting;
+        _cameraError = null;
+
+        try
+        {
+            _selfReference ??= DotNetObjectReference.Create(this);
+            var result = await JS.InvokeAsync<CameraStartResult>("cameraInterop.start", _disposeCts.Token, VideoElementId, _selfReference);
+            if (result.Ok)
+            {
+                _cameraState = CameraState.Ready;
+            }
+            else
+            {
+                _cameraState = CameraState.Failed;
+                _cameraError = result.Message ?? "The camera could not be started.";
+            }
+        }
+        catch (Exception ex) when (ex is JSException or TaskCanceledException or JSDisconnectedException)
+        {
+            Logger.LogWarning(ex, "Starting the camera failed");
+            _cameraState = CameraState.Failed;
+            _cameraError = "The camera could not be started. Reload the page and try again.";
+        }
+    }
+
+    private async Task StopCameraAsync()
+    {
+        _cameraState = CameraState.Off;
+        try
+        {
+            await JS.InvokeVoidAsync("cameraInterop.stop", VideoElementId);
+        }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or TaskCanceledException or InvalidOperationException)
+        {
+            // Circuit gone, prerendering, or page navigating: the browser releases the tracks with the page.
+        }
+    }
+
+    [JSInvokable]
+    public Task OnCameraEnded() => InvokeAsync(() =>
+    {
+        _cameraState = CameraState.Failed;
+        _cameraError = "The camera was disconnected or access was revoked. Reconnect it and press Retry camera.";
+        StateHasChanged();
+    });
+
+    private async Task CaptureAndScanAsync()
+    {
+        if (_isScanning) return;
+
+        _isScanning = true;
+        _errorMessage = null;
+        _result = null;
+        _diagnostics = null;
+
+        try
+        {
+            var total = Stopwatch.StartNew();
+            var imageBytes = await JS.InvokeAsync<byte[]?>("cameraInterop.capture", _disposeCts.Token, VideoElementId);
+            var captureTime = total.Elapsed;
+
+            if (imageBytes is not { Length: > 0 })
+            {
+                _errorMessage = "The camera frame is not ready yet. Wait a moment and try again.";
+                return;
+            }
+
+            var embedding = await ImageEmbeddingService.GenerateEmbeddingAsync(imageBytes, _disposeCts.Token);
+            _result = await RecognitionService.FindCandidatesAsync(embedding.Vector, _disposeCts.Token);
+            _modelStatus = ImageEmbeddingService.Status;
+
+            _diagnostics = $"capture {captureTime.TotalMilliseconds:0} ms · preprocessing {embedding.PreprocessingTime.TotalMilliseconds:0} ms · " +
+                           $"inference {embedding.InferenceTime.TotalMilliseconds:0} ms · matching {_result.MatchingTime.TotalMilliseconds:0} ms · " +
+                           $"total {total.Elapsed.TotalMilliseconds:0} ms ({_result.IndexedImageCount} indexed photos)";
+            Logger.LogInformation("Scan completed: {Diagnostics}", _diagnostics);
+        }
+        catch (OperationCanceledException) when (_disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (!UserMessages.IsUserFacing(ex))
+            {
+                Logger.LogError(ex, "Scan failed");
+            }
+
+            _modelStatus = ImageEmbeddingService.Status;
+            _errorMessage = UserMessages.From(ex, "The scan failed. Please try again or use manual search.");
+        }
+        finally
+        {
+            _isScanning = false;
+        }
+    }
+
+    private async Task RunManualSearchAsync()
+    {
+        _manualSearched = !string.IsNullOrWhiteSpace(_manualQuery);
+        _manualResults = [];
+        if (!_manualSearched) return;
+
+        try
+        {
+            var results = await ProductService.SearchAsync(_manualQuery, activeOnly: true);
+            _manualResults = results.Take(MaxManualResults).ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Manual search failed");
+            _errorMessage = "Manual search failed. Please try again.";
+        }
+    }
+
+    /// <summary>Re-reads the product from the database so the price used is always the current catalog price.</summary>
+    private async Task ConfirmProductAsync(Guid productId)
+    {
+        _errorMessage = null;
+        try
+        {
+            var product = await ProductService.GetAsync(productId);
+            if (product is null || !product.IsActive)
+            {
+                _errorMessage = "This product is no longer available. Please choose another one.";
+                return;
+            }
+
+            var existing = _cart.FirstOrDefault(line => line.ProductId == product.Id && line.UnitPrice == product.SalePrice);
+            if (existing is not null)
+            {
+                existing.Quantity += 1;
+            }
+            else
+            {
+                _cart.Add(new CartLine
+                {
+                    ProductId = product.Id,
+                    Sku = product.Sku,
+                    Name = product.Name,
+                    SaleUnit = product.SaleUnit,
+                    UnitPrice = product.SalePrice,
+                });
+            }
+
+            // Ready for the next item.
+            _result = null;
+            _diagnostics = null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Confirming product failed");
+            _errorMessage = "The product could not be added. Please try again.";
+        }
+    }
+
+    private static void SetQuantity(CartLine line, object? value)
+    {
+        if (decimal.TryParse(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture),
+                System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var quantity)
+            && quantity > 0)
+        {
+            line.Quantity = quantity;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _modelStatusTimer?.Dispose();
+        _disposeCts.Cancel();
+        if (_cameraState is not CameraState.Off)
+        {
+            await StopCameraAsync();
+        }
+        _selfReference?.Dispose();
+        _disposeCts.Dispose();
+    }
+}
